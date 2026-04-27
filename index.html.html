@@ -1,0 +1,731 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+  <title>Finance Tracker</title>
+  <link href="https://fonts.googleapis.com/css2?family=Crimson+Pro:wght@400;600;700&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+
+  <!-- Firebase -->
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-database-compat.js"></script>
+
+  <!-- React -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #F9F7F4; font-family: 'DM Sans', 'Helvetica Neue', sans-serif; color: #1A1A18; -webkit-tap-highlight-color: transparent; }
+    input, select, button, textarea { font-family: inherit; }
+    ::-webkit-scrollbar { width: 4px; height: 4px; }
+    ::-webkit-scrollbar-thumb { background: #E8E6E2; border-radius: 99px; }
+    input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<!-- ── PASTE YOUR FIREBASE CONFIG HERE ──────────────────────────────────────────
+     1. Go to https://console.firebase.google.com
+     2. Create a project (or open an existing one)
+     3. Click the </> Web icon to register your app
+     4. Copy the firebaseConfig object and replace the one below
+     5. In Firebase console → Build → Realtime Database → Create database → Start in test mode
+     ──────────────────────────────────────────────────────────────────────────── -->
+<script>
+  window.FIREBASE_CONFIG = {
+    apiKey: "AIzaSyCFtsACY70LtTOxB1_VjSL5mxPurjb5tRg",
+    authDomain: "finance-tracking-37fac.firebaseapp.com",
+    databaseURL: "https://finance-tracking-37fac-default-rtdb.firebaseio.com",
+    projectId: "finance-tracking-37fac",
+    storageBucket: "finance-tracking-37fac.firebasestorage.app",
+    messagingSenderId: "292603069350",
+    appId: "1:292603069350:web:968832409ada35e53a8567"
+  };
+</script>
+
+<script type="text/babel">
+  const { useState, useEffect, useCallback, useRef } = React;
+
+  // ── Theme ────────────────────────────────────────────────────────────────────
+  const ACCENT = "#2D6A4F";
+  const ACCENT_LIGHT = "#E8F5EE";
+  const DANGER = "#C0392B";
+  const WARN = "#E67E22";
+  const TEXT = "#1A1A18";
+  const MUTED = "#888880";
+  const BG = "#F9F7F4";
+  const SURFACE = "#FFFFFF";
+  const BORDER = "#E8E6E2";
+  const BLUE = "#2563EB";
+
+  const CATEGORIES = ["Housing","Food","Transport","Utilities","Health","Entertainment","Clothing","Education","Savings","Business","Other"];
+  const fmt = (n) => new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD", maximumFractionDigits: 2 }).format(n || 0);
+  const today = () => new Date().toISOString().split("T")[0];
+  const uid = () => Math.random().toString(36).slice(2, 10);
+
+  // ── Firebase sync hook ───────────────────────────────────────────────────────
+  const isConfigured = () => {
+    const c = window.FIREBASE_CONFIG;
+    return c && c.apiKey && c.databaseURL;
+  };
+
+  let _db = null;
+  const getDb = () => {
+    if (_db) return _db;
+    if (!isConfigured()) return null;
+    try {
+      const app = firebase.initializeApp(window.FIREBASE_CONFIG);
+      _db = firebase.database(app);
+      return _db;
+    } catch (e) {
+      try { _db = firebase.database(); return _db; } catch { return null; }
+    }
+  };
+
+  const useFirebaseState = (path, initial) => {
+    const [state, setState] = useState(initial);
+    const [synced, setSynced] = useState(false);
+    const db = getDb();
+
+    useEffect(() => {
+      if (!db) {
+        // Fall back to localStorage
+        try {
+          const saved = localStorage.getItem(path);
+          if (saved) setState(JSON.parse(saved));
+        } catch {}
+        setSynced(true);
+        return;
+      }
+      const ref = db.ref("finance/" + path);
+      ref.on("value", snap => {
+        const val = snap.val();
+        if (val !== null) setState(val);
+        setSynced(true);
+      });
+      return () => ref.off();
+    }, [path]);
+
+    const set = useCallback((val) => {
+      setState(prev => {
+        const next = typeof val === "function" ? val(prev) : val;
+        if (db) {
+          db.ref("finance/" + path).set(next).catch(console.error);
+        } else {
+          try { localStorage.setItem(path, JSON.stringify(next)); } catch {}
+        }
+        return next;
+      });
+    }, [path, db]);
+
+    return [state, set, synced];
+  };
+
+  // ── Small components ─────────────────────────────────────────────────────────
+  const Pill = ({ children, color = ACCENT }) => (
+    <span style={{ background: color + "22", color, fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 20 }}>{children}</span>
+  );
+
+  const Card = ({ children, style }) => (
+    <div style={{ background: SURFACE, borderRadius: 12, border: `1px solid ${BORDER}`, padding: "18px 18px", ...style }}>{children}</div>
+  );
+
+  const Input = ({ label, ...props }) => (
+    <label style={{ display: "flex", flexDirection: "column", gap: 4, flex: 1, minWidth: 130 }}>
+      {label && <span style={{ fontSize: 11, fontWeight: 600, color: MUTED, letterSpacing: "0.05em", textTransform: "uppercase" }}>{label}</span>}
+      <input {...props} style={{ border: `1px solid ${BORDER}`, borderRadius: 8, padding: "9px 12px", fontSize: 14, color: TEXT, background: BG, outline: "none", width: "100%", ...props.style }} />
+    </label>
+  );
+
+  const Sel = ({ label, children, ...props }) => (
+    <label style={{ display: "flex", flexDirection: "column", gap: 4, flex: 1, minWidth: 130 }}>
+      {label && <span style={{ fontSize: 11, fontWeight: 600, color: MUTED, letterSpacing: "0.05em", textTransform: "uppercase" }}>{label}</span>}
+      <select {...props} style={{ border: `1px solid ${BORDER}`, borderRadius: 8, padding: "9px 12px", fontSize: 14, color: TEXT, background: BG, outline: "none", width: "100%", ...props.style }}>{children}</select>
+    </label>
+  );
+
+  const Btn = ({ children, variant = "primary", small, full, style, ...props }) => (
+    <button {...props} style={{
+      background: variant === "primary" ? ACCENT : variant === "danger" ? DANGER : variant === "blue" ? BLUE : "transparent",
+      color: variant === "ghost" ? MUTED : "#fff",
+      border: variant === "ghost" ? `1px solid ${BORDER}` : "none",
+      borderRadius: 8, padding: small ? "7px 14px" : "10px 20px",
+      fontSize: small ? 13 : 14, fontWeight: 600, cursor: "pointer",
+      width: full ? "100%" : "auto", transition: "opacity 0.15s", ...style
+    }}
+      onMouseOver={e => e.currentTarget.style.opacity = "0.82"}
+      onMouseOut={e => e.currentTarget.style.opacity = "1"}
+    >{children}</button>
+  );
+
+  const Bar = ({ value, max, color = ACCENT }) => {
+    const pct = Math.min(100, max > 0 ? (value / max) * 100 : 0);
+    return (
+      <div style={{ height: 6, background: BORDER, borderRadius: 99, overflow: "hidden" }}>
+        <div style={{ height: "100%", width: `${pct}%`, background: pct > 90 ? DANGER : pct > 70 ? WARN : color, borderRadius: 99, transition: "width 0.4s" }} />
+      </div>
+    );
+  };
+
+  const Empty = ({ icon, text }) => (
+    <div style={{ textAlign: "center", padding: "40px 20px", color: MUTED }}>
+      <div style={{ fontSize: 32, marginBottom: 8 }}>{icon}</div>
+      <div style={{ fontSize: 14 }}>{text}</div>
+    </div>
+  );
+
+  // ── Setup Wizard ─────────────────────────────────────────────────────────────
+  function SetupWizard() {
+    const [step, setStep] = useState(0);
+    const steps = [
+      {
+        icon: "🔥",
+        title: "Set up sync in ~5 minutes",
+        body: "To sync between your phone and computer, you need a free Firebase account. It's Google's free database service — no credit card required.",
+        action: "Let's go →",
+        next: 1,
+      },
+      {
+        icon: "1️⃣",
+        title: "Create a Firebase project",
+        body: (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <p style={{ fontSize: 14, color: MUTED, lineHeight: 1.6 }}>
+              Go to <a href="https://console.firebase.google.com" target="_blank" rel="noreferrer" style={{ color: BLUE }}>console.firebase.google.com</a> and sign in with your Google account.
+            </p>
+            <p style={{ fontSize: 14, color: MUTED, lineHeight: 1.6 }}>Click <strong style={{ color: TEXT }}>"Create a project"</strong>, give it any name (e.g. <em>my-finances</em>), and follow the steps. Disable Google Analytics when asked — you don't need it.</p>
+          </div>
+        ),
+        action: "Done, next →",
+        next: 2,
+      },
+      {
+        icon: "2️⃣",
+        title: "Create a Realtime Database",
+        body: (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <p style={{ fontSize: 14, color: MUTED, lineHeight: 1.6 }}>In your Firebase project, go to the left sidebar → <strong style={{ color: TEXT }}>Build → Realtime Database</strong>.</p>
+            <p style={{ fontSize: 14, color: MUTED, lineHeight: 1.6 }}>Click <strong style={{ color: TEXT }}>"Create database"</strong>. Choose any location. When asked about security rules, choose <strong style={{ color: TEXT }}>"Start in test mode"</strong> and click Enable.</p>
+          </div>
+        ),
+        action: "Done, next →",
+        next: 3,
+      },
+      {
+        icon: "3️⃣",
+        title: "Register your app & get config",
+        body: (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <p style={{ fontSize: 14, color: MUTED, lineHeight: 1.6 }}>Go to <strong style={{ color: TEXT }}>Project Settings</strong> (gear icon ⚙️ top left). Scroll down to <strong style={{ color: TEXT }}>"Your apps"</strong> and click the <strong style={{ color: TEXT }}>&lt;/&gt; Web</strong> icon.</p>
+            <p style={{ fontSize: 14, color: MUTED, lineHeight: 1.6 }}>Give it a nickname, click <strong style={{ color: TEXT }}>"Register app"</strong>. You'll see a <code style={{ background: BG, padding: "1px 5px", borderRadius: 4 }}>firebaseConfig</code> object — <strong style={{ color: TEXT }}>copy all of it</strong>.</p>
+          </div>
+        ),
+        action: "I have my config →",
+        next: 4,
+      },
+      {
+        icon: "4️⃣",
+        title: "Paste your config into the file",
+        body: (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <p style={{ fontSize: 14, color: MUTED, lineHeight: 1.6 }}>Open <strong style={{ color: TEXT }}>finance-tracker.html</strong> in a text editor (Notepad on Windows, TextEdit on Mac, or right-click → Open with → Notepad).</p>
+            <p style={{ fontSize: 14, color: MUTED, lineHeight: 1.6 }}>Find the section that says <code style={{ background: BG, padding: "1px 5px", borderRadius: 4 }}>PASTE YOUR FIREBASE CONFIG HERE</code> near the top. Replace the <code style={{ background: BG, padding: "1px 5px", borderRadius: 4 }}>window.FIREBASE_CONFIG = {"{ ... }"}</code> block with your copied config.</p>
+            <p style={{ fontSize: 14, color: MUTED, lineHeight: 1.6 }}>Save the file, then reload it in your browser. The sync indicator will turn green ✓</p>
+            <div style={{ background: "#1A1A18", borderRadius: 8, padding: "12px 14px", fontSize: 12, color: "#7EC8A4", fontFamily: "monospace", lineHeight: 1.7 }}>
+              window.FIREBASE_CONFIG = {"{"}<br/>
+              &nbsp;&nbsp;apiKey: "AIza...",<br/>
+              &nbsp;&nbsp;authDomain: "my-finances.firebaseapp.com",<br/>
+              &nbsp;&nbsp;databaseURL: "https://my-finances-default-rtdb...",<br/>
+              &nbsp;&nbsp;projectId: "my-finances",<br/>
+              &nbsp;&nbsp;...<br/>
+              {"}"};
+            </div>
+          </div>
+        ),
+        action: "I pasted it, done!",
+        next: null,
+        finish: true,
+      },
+    ];
+
+    const s = steps[step];
+
+    return (
+      <div style={{ minHeight: "100vh", background: BG, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+        <div style={{ maxWidth: 480, width: "100%" }}>
+          <div style={{ textAlign: "center", marginBottom: 28 }}>
+            <h1 style={{ fontFamily: "'Crimson Pro', Georgia, serif", fontSize: 28, fontWeight: 700, color: TEXT }}>Finance Tracker</h1>
+            <p style={{ fontSize: 14, color: MUTED, marginTop: 6 }}>Firebase not configured yet</p>
+          </div>
+          <Card>
+            <div style={{ fontSize: 36, marginBottom: 12 }}>{s.icon}</div>
+            <div style={{ fontWeight: 700, fontSize: 17, color: TEXT, marginBottom: 12 }}>{s.title}</div>
+            <div style={{ marginBottom: 20, lineHeight: 1.6 }}>{typeof s.body === "string" ? <p style={{ fontSize: 14, color: MUTED }}>{s.body}</p> : s.body}</div>
+            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <Btn onClick={() => s.finish ? window.location.reload() : setStep(s.next)} full>
+                {s.action}
+              </Btn>
+              {step > 0 && <Btn variant="ghost" onClick={() => setStep(step - 1)}>← Back</Btn>}
+            </div>
+            {step > 0 && (
+              <div style={{ display: "flex", gap: 6, marginTop: 16, justifyContent: "center" }}>
+                {steps.map((_, i) => (
+                  <div key={i} style={{ width: i === step ? 20 : 6, height: 6, borderRadius: 99, background: i === step ? ACCENT : BORDER, transition: "all 0.2s" }} />
+                ))}
+              </div>
+            )}
+          </Card>
+          <p style={{ textAlign: "center", fontSize: 12, color: MUTED, marginTop: 16 }}>
+            Already configured but seeing this? Check that <code>databaseURL</code> is filled in correctly.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Sync badge ───────────────────────────────────────────────────────────────
+  const SyncBadge = ({ synced }) => (
+    <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 600, color: synced ? ACCENT : MUTED }}>
+      <div style={{ width: 7, height: 7, borderRadius: "50%", background: synced ? ACCENT : WARN, boxShadow: synced ? `0 0 0 2px ${ACCENT_LIGHT}` : "none" }} />
+      {synced ? "Synced" : "Connecting…"}
+    </div>
+  );
+
+  // ── Transactions ─────────────────────────────────────────────────────────────
+  function Transactions({ transactions, setTransactions }) {
+    const empty = { type: "expense", amount: "", category: "Food", description: "", date: today() };
+    const [form, setForm] = useState(empty);
+    const [filter, setFilter] = useState("all");
+    const [open, setOpen] = useState(false);
+
+    const income = transactions.filter(t => t.type === "income").reduce((s, t) => s + t.amount, 0);
+    const expenses = transactions.filter(t => t.type === "expense").reduce((s, t) => s + t.amount, 0);
+    const balance = income - expenses;
+
+    const add = () => {
+      if (!form.amount || isNaN(form.amount)) return;
+      setTransactions(prev => [{ ...form, amount: parseFloat(form.amount), id: uid() }, ...prev]);
+      setForm(empty); setOpen(false);
+    };
+
+    const visible = transactions.filter(t => filter === "all" || t.type === filter);
+
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+          {[{ label: "Income", value: income, color: ACCENT }, { label: "Expenses", value: expenses, color: DANGER }, { label: "Balance", value: balance, color: balance >= 0 ? ACCENT : DANGER }].map(s => (
+            <Card key={s.label} style={{ textAlign: "center", padding: "14px 8px" }}>
+              <div style={{ fontSize: 10, color: MUTED, fontWeight: 600, letterSpacing: "0.04em", textTransform: "uppercase", marginBottom: 5 }}>{s.label}</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: s.color, fontFamily: "'Crimson Pro', Georgia, serif" }}>{fmt(s.value)}</div>
+            </Card>
+          ))}
+        </div>
+
+        {open ? (
+          <Card>
+            <div style={{ fontWeight: 700, marginBottom: 12, color: TEXT }}>New Transaction</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+              <Sel label="Type" value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))}>
+                <option value="expense">Expense</option><option value="income">Income</option>
+              </Sel>
+              <Input label="Amount ($)" type="number" inputMode="decimal" placeholder="0.00" value={form.amount} onChange={e => setForm(f => ({ ...f, amount: e.target.value }))} />
+              <Sel label="Category" value={form.category} onChange={e => setForm(f => ({ ...f, category: e.target.value }))}>
+                {CATEGORIES.map(c => <option key={c}>{c}</option>)}
+              </Sel>
+              <Input label="Description" placeholder="What was this for?" value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} />
+              <Input label="Date" type="date" value={form.date} onChange={e => setForm(f => ({ ...f, date: e.target.value }))} />
+            </div>
+            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+              <Btn onClick={add}>Add</Btn>
+              <Btn variant="ghost" onClick={() => setOpen(false)}>Cancel</Btn>
+            </div>
+          </Card>
+        ) : (
+          <Btn onClick={() => setOpen(true)} style={{ alignSelf: "flex-start" }}>+ Add Transaction</Btn>
+        )}
+
+        <Card style={{ padding: 0, overflow: "hidden" }}>
+          <div style={{ display: "flex", borderBottom: `1px solid ${BORDER}` }}>
+            {["all","income","expense"].map(f => (
+              <button key={f} onClick={() => setFilter(f)} style={{ flex: 1, padding: "11px 0", fontSize: 13, fontWeight: 600, background: filter === f ? ACCENT_LIGHT : "transparent", color: filter === f ? ACCENT : MUTED, border: "none", cursor: "pointer", textTransform: "capitalize" }}>
+                {f === "all" ? "All" : f === "income" ? "Income" : "Expenses"}
+              </button>
+            ))}
+          </div>
+          {visible.length === 0 ? <Empty icon="📒" text="No transactions yet." /> : visible.map((t, i) => (
+            <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "13px 16px", borderBottom: i < visible.length - 1 ? `1px solid ${BORDER}` : "none" }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 600, fontSize: 14, color: TEXT, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.description || t.category}</div>
+                <div style={{ fontSize: 12, color: MUTED, marginTop: 1 }}>{t.category} · {t.date}</div>
+              </div>
+              <div style={{ fontWeight: 700, fontSize: 14, color: t.type === "income" ? ACCENT : DANGER, whiteSpace: "nowrap" }}>{t.type === "income" ? "+" : "−"}{fmt(t.amount)}</div>
+              <button onClick={() => setTransactions(p => p.filter(x => x.id !== t.id))} style={{ background: "none", border: "none", cursor: "pointer", color: MUTED, fontSize: 18, padding: "0 2px", flexShrink: 0 }}>×</button>
+            </div>
+          ))}
+        </Card>
+      </div>
+    );
+  }
+
+  // ── Budget ───────────────────────────────────────────────────────────────────
+  function Budget({ transactions, budgets, setBudgets }) {
+    const [editing, setEditing] = useState(null);
+    const [amount, setAmount] = useState("");
+    const thisMonth = new Date().toISOString().slice(0, 7);
+    const spent = {};
+    transactions.filter(t => t.type === "expense" && t.date.startsWith(thisMonth)).forEach(t => { spent[t.category] = (spent[t.category] || 0) + t.amount; });
+    const totalBudget = Object.values(budgets).reduce((a, b) => a + b, 0);
+    const totalSpent = Object.keys(budgets).reduce((s, c) => s + (spent[c] || 0), 0);
+    const save = (cat) => { const v = parseFloat(amount); if (!v) return; setBudgets(p => ({ ...p, [cat]: v })); setEditing(null); setAmount(""); };
+
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          {[{ label: "Budgeted", value: totalBudget, color: TEXT }, { label: "Spent", value: totalSpent, color: totalSpent > totalBudget ? DANGER : ACCENT }].map(s => (
+            <Card key={s.label} style={{ textAlign: "center", padding: "14px 8px" }}>
+              <div style={{ fontSize: 10, color: MUTED, fontWeight: 600, letterSpacing: "0.04em", textTransform: "uppercase", marginBottom: 5 }}>{s.label}</div>
+              <div style={{ fontSize: 18, fontWeight: 700, color: s.color, fontFamily: "'Crimson Pro', Georgia, serif" }}>{fmt(s.value)}</div>
+            </Card>
+          ))}
+        </div>
+        <Card style={{ padding: 0, overflow: "hidden" }}>
+          <div style={{ padding: "14px 16px", borderBottom: `1px solid ${BORDER}`, fontWeight: 700, color: TEXT, fontSize: 14 }}>
+            {new Date().toLocaleString("default", { month: "long", year: "numeric" })}
+          </div>
+          {CATEGORIES.filter(c => c !== "Savings").map((cat, i) => {
+            const budget = budgets[cat] || 0, s = spent[cat] || 0, isEdit = editing === cat;
+            return (
+              <div key={cat} style={{ padding: "13px 16px", borderBottom: i < CATEGORIES.length - 2 ? `1px solid ${BORDER}` : "none" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: budget > 0 ? 8 : 0 }}>
+                  <span style={{ fontWeight: 600, fontSize: 14, color: TEXT }}>{cat}</span>
+                  {isEdit ? (
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <input value={amount} onChange={e => setAmount(e.target.value)} placeholder="0.00" type="number" inputMode="decimal" autoFocus
+                        style={{ border: `1px solid ${BORDER}`, borderRadius: 6, padding: "5px 8px", fontSize: 13, width: 80, background: BG, outline: "none" }}
+                        onKeyDown={e => e.key === "Enter" && save(cat)} />
+                      <Btn small onClick={() => save(cat)}>✓</Btn>
+                      <Btn small variant="ghost" onClick={() => setEditing(null)}>✕</Btn>
+                    </div>
+                  ) : (
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <span style={{ fontSize: 12, color: MUTED }}>{fmt(s)}{budget > 0 ? ` / ${fmt(budget)}` : ""}</span>
+                      <Btn small variant="ghost" onClick={() => { setEditing(cat); setAmount(budget || ""); }}>{budget ? "Edit" : "Set"}</Btn>
+                    </div>
+                  )}
+                </div>
+                {budget > 0 && <Bar value={s} max={budget} />}
+                {budget > 0 && s > budget && <div style={{ fontSize: 11, color: DANGER, marginTop: 4, fontWeight: 600 }}>Over by {fmt(s - budget)}</div>}
+              </div>
+            );
+          })}
+        </Card>
+      </div>
+    );
+  }
+
+  // ── Savings ──────────────────────────────────────────────────────────────────
+  function Savings({ goals, setGoals }) {
+    const empty = { name: "", target: "", current: "", date: "" };
+    const [form, setForm] = useState(empty);
+    const [open, setOpen] = useState(false);
+    const [contrib, setContrib] = useState({});
+
+    const add = () => {
+      if (!form.name || !form.target) return;
+      setGoals(p => [...p, { ...form, target: parseFloat(form.target), current: parseFloat(form.current) || 0, id: uid() }]);
+      setForm(empty); setOpen(false);
+    };
+
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        {open ? (
+          <Card>
+            <div style={{ fontWeight: 700, marginBottom: 12, color: TEXT }}>New Goal</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+              <Input label="Goal Name" placeholder="Emergency Fund" value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
+              <Input label="Target ($)" type="number" inputMode="decimal" placeholder="0.00" value={form.target} onChange={e => setForm(f => ({ ...f, target: e.target.value }))} />
+              <Input label="Already Saved ($)" type="number" inputMode="decimal" placeholder="0.00" value={form.current} onChange={e => setForm(f => ({ ...f, current: e.target.value }))} />
+              <Input label="Target Date" type="date" value={form.date} onChange={e => setForm(f => ({ ...f, date: e.target.value }))} />
+            </div>
+            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+              <Btn onClick={add}>Create</Btn>
+              <Btn variant="ghost" onClick={() => setOpen(false)}>Cancel</Btn>
+            </div>
+          </Card>
+        ) : <Btn onClick={() => setOpen(true)} style={{ alignSelf: "flex-start" }}>+ New Goal</Btn>}
+
+        {goals.length === 0 && !open && <Empty icon="🎯" text="No savings goals yet." />}
+        {goals.map(g => {
+          const pct = Math.min(100, (g.current / g.target) * 100), done = pct >= 100;
+          return (
+            <Card key={g.id}>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: 15, color: TEXT, display: "flex", alignItems: "center", gap: 8 }}>
+                    {g.name} {done && <Pill color={ACCENT}>🎉 Done!</Pill>}
+                  </div>
+                  {g.date && <div style={{ fontSize: 12, color: MUTED, marginTop: 2 }}>Target: {g.date}</div>}
+                </div>
+                <button onClick={() => setGoals(p => p.filter(x => x.id !== g.id))} style={{ background: "none", border: "none", cursor: "pointer", color: MUTED, fontSize: 18 }}>×</button>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: MUTED, marginBottom: 8 }}>
+                <span style={{ fontWeight: 700, color: ACCENT }}>{fmt(g.current)}</span>
+                <span>{Math.round(pct)}% of {fmt(g.target)}</span>
+              </div>
+              <Bar value={g.current} max={g.target} />
+              {!done && (
+                <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                  <input value={contrib[g.id] || ""} onChange={e => setContrib(c => ({ ...c, [g.id]: e.target.value }))}
+                    placeholder="Add amount..." type="number" inputMode="decimal"
+                    style={{ border: `1px solid ${BORDER}`, borderRadius: 8, padding: "8px 10px", fontSize: 13, background: BG, outline: "none", flex: 1 }} />
+                  <Btn small onClick={() => {
+                    const a = parseFloat(contrib[g.id]); if (!a) return;
+                    setGoals(p => p.map(x => x.id === g.id ? { ...x, current: Math.min(x.target, x.current + a) } : x));
+                    setContrib(c => ({ ...c, [g.id]: "" }));
+                  }}>Add</Btn>
+                  <span style={{ fontSize: 12, color: MUTED, alignSelf: "center", whiteSpace: "nowrap" }}>{fmt(g.target - g.current)} left</span>
+                </div>
+              )}
+            </Card>
+          );
+        })}
+      </div>
+    );
+  }
+
+  // ── Invoices ─────────────────────────────────────────────────────────────────
+  function Invoices({ invoices, setInvoices }) {
+    const empty = { client: "", service: "", amount: "", date: today(), due: "", status: "unpaid", notes: "" };
+    const [form, setForm] = useState(empty);
+    const [open, setOpen] = useState(false);
+    const [filter, setFilter] = useState("all");
+
+    const add = () => {
+      if (!form.client || !form.amount) return;
+      const num = String(invoices.length + 1).padStart(3, "0");
+      setInvoices(p => [{ ...form, amount: parseFloat(form.amount), id: uid(), num: `INV-${num}` }, ...p]);
+      setForm(empty); setOpen(false);
+    };
+
+    const outstanding = invoices.filter(i => i.status === "unpaid").reduce((s, i) => s + i.amount, 0);
+    const earned = invoices.filter(i => i.status === "paid").reduce((s, i) => s + i.amount, 0);
+    const visible = invoices.filter(i => filter === "all" || i.status === filter);
+
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          {[{ label: "Outstanding", value: outstanding, color: outstanding > 0 ? WARN : TEXT }, { label: "Earned", value: earned, color: ACCENT }].map(s => (
+            <Card key={s.label} style={{ textAlign: "center", padding: "14px 8px" }}>
+              <div style={{ fontSize: 10, color: MUTED, fontWeight: 600, letterSpacing: "0.04em", textTransform: "uppercase", marginBottom: 5 }}>{s.label}</div>
+              <div style={{ fontSize: 18, fontWeight: 700, color: s.color, fontFamily: "'Crimson Pro', Georgia, serif" }}>{fmt(s.value)}</div>
+            </Card>
+          ))}
+        </div>
+        {open ? (
+          <Card>
+            <div style={{ fontWeight: 700, marginBottom: 12, color: TEXT }}>New Invoice</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+              <Input label="Client" placeholder="Smith Residence" value={form.client} onChange={e => setForm(f => ({ ...f, client: e.target.value }))} />
+              <Input label="Service" placeholder="Full Move + Packing" value={form.service} onChange={e => setForm(f => ({ ...f, service: e.target.value }))} />
+              <Input label="Amount ($)" type="number" inputMode="decimal" placeholder="0.00" value={form.amount} onChange={e => setForm(f => ({ ...f, amount: e.target.value }))} />
+              <Input label="Invoice Date" type="date" value={form.date} onChange={e => setForm(f => ({ ...f, date: e.target.value }))} />
+              <Input label="Due Date" type="date" value={form.due} onChange={e => setForm(f => ({ ...f, due: e.target.value }))} />
+              <Input label="Notes" placeholder="Optional" value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} />
+            </div>
+            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+              <Btn onClick={add}>Create</Btn>
+              <Btn variant="ghost" onClick={() => setOpen(false)}>Cancel</Btn>
+            </div>
+          </Card>
+        ) : <Btn onClick={() => setOpen(true)} style={{ alignSelf: "flex-start" }}>+ New Invoice</Btn>}
+
+        <Card style={{ padding: 0, overflow: "hidden" }}>
+          <div style={{ display: "flex", borderBottom: `1px solid ${BORDER}` }}>
+            {["all","unpaid","paid"].map(f => (
+              <button key={f} onClick={() => setFilter(f)} style={{ flex: 1, padding: "11px 0", fontSize: 13, fontWeight: 600, background: filter === f ? ACCENT_LIGHT : "transparent", color: filter === f ? ACCENT : MUTED, border: "none", cursor: "pointer", textTransform: "capitalize" }}>
+                {f === "all" ? "All" : f}
+              </button>
+            ))}
+          </div>
+          {visible.length === 0 ? <Empty icon="🧾" text="No invoices yet." /> : visible.map((inv, i) => {
+            const overdue = inv.status === "unpaid" && inv.due && inv.due < today();
+            return (
+              <div key={inv.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "13px 16px", borderBottom: i < visible.length - 1 ? `1px solid ${BORDER}` : "none" }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, fontSize: 14, color: TEXT, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                    {inv.client} {overdue && <Pill color={DANGER}>Overdue</Pill>}
+                  </div>
+                  <div style={{ fontSize: 11, color: MUTED, marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{inv.num} · {inv.service}</div>
+                </div>
+                <div style={{ fontWeight: 700, fontSize: 14, color: inv.status === "paid" ? ACCENT : WARN, whiteSpace: "nowrap" }}>{fmt(inv.amount)}</div>
+                <button onClick={() => setInvoices(p => p.map(x => x.id === inv.id ? { ...x, status: x.status === "paid" ? "unpaid" : "paid" } : x))}
+                  style={{ background: inv.status === "paid" ? ACCENT_LIGHT : BORDER, border: "none", borderRadius: 6, padding: "4px 8px", cursor: "pointer", fontSize: 11, fontWeight: 600, color: inv.status === "paid" ? ACCENT : MUTED, whiteSpace: "nowrap" }}>
+                  {inv.status === "paid" ? "✓" : "Pay"}
+                </button>
+                <button onClick={() => setInvoices(p => p.filter(x => x.id !== inv.id))} style={{ background: "none", border: "none", cursor: "pointer", color: MUTED, fontSize: 18, flexShrink: 0 }}>×</button>
+              </div>
+            );
+          })}
+        </Card>
+      </div>
+    );
+  }
+
+  // ── Paycheques ───────────────────────────────────────────────────────────────
+  function Paycheques({ paycheques, setPaycheques, setTransactions }) {
+    const empty = { employer: "", periodFrom: "", periodTo: "", gross: "", fedTax: "", provTax: "", cpp: "", ei: "", other: "", notes: "" };
+    const [form, setForm] = useState(empty);
+    const [open, setOpen] = useState(false);
+
+    const calcNet = (f) => {
+      const g = parseFloat(f.gross) || 0;
+      const d = (parseFloat(f.fedTax)||0)+(parseFloat(f.provTax)||0)+(parseFloat(f.cpp)||0)+(parseFloat(f.ei)||0)+(parseFloat(f.other)||0);
+      return Math.max(0, g - d);
+    };
+
+    const add = () => {
+      if (!form.employer || !form.gross) return;
+      const netPay = calcNet(form);
+      const entry = { ...form, gross: parseFloat(form.gross), net: netPay, id: uid(), date: form.periodTo || today() };
+      setPaycheques(p => [entry, ...p]);
+      setTransactions(p => [{ type: "income", amount: netPay, category: "Other", description: `Paycheque — ${form.employer}`, date: entry.date, id: uid() }, ...p]);
+      setForm(empty); setOpen(false);
+    };
+
+    const totalGross = paycheques.reduce((s, p) => s + p.gross, 0);
+    const totalNet = paycheques.reduce((s, p) => s + p.net, 0);
+
+    const DRow = ({ label, field }) => (
+      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: `1px solid ${BORDER}` }}>
+        <span style={{ flex: 1, fontSize: 13, color: MUTED }}>{label}</span>
+        <input value={form[field]} onChange={e => setForm(f => ({ ...f, [field]: e.target.value }))} type="number" inputMode="decimal" placeholder="0.00"
+          style={{ border: `1px solid ${BORDER}`, borderRadius: 6, padding: "5px 8px", fontSize: 13, width: 90, background: BG, outline: "none", textAlign: "right" }} />
+      </div>
+    );
+
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+          {[{ label: "Gross", value: totalGross, color: TEXT }, { label: "Deducted", value: totalGross - totalNet, color: DANGER }, { label: "Net Pay", value: totalNet, color: ACCENT }].map(s => (
+            <Card key={s.label} style={{ textAlign: "center", padding: "14px 8px" }}>
+              <div style={{ fontSize: 10, color: MUTED, fontWeight: 600, letterSpacing: "0.04em", textTransform: "uppercase", marginBottom: 5 }}>{s.label}</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: s.color, fontFamily: "'Crimson Pro', Georgia, serif" }}>{fmt(s.value)}</div>
+            </Card>
+          ))}
+        </div>
+
+        {open ? (
+          <Card>
+            <div style={{ fontWeight: 700, marginBottom: 4, color: TEXT }}>Log Paycheque</div>
+            <div style={{ fontSize: 12, color: MUTED, marginBottom: 12 }}>Net pay auto-adds to Transactions as income.</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 14 }}>
+              <Input label="Employer" placeholder="e.g. University of Ottawa" value={form.employer} onChange={e => setForm(f => ({ ...f, employer: e.target.value }))} />
+              <Input label="Gross Pay ($)" type="number" inputMode="decimal" placeholder="0.00" value={form.gross} onChange={e => setForm(f => ({ ...f, gross: e.target.value }))} />
+              <Input label="Period From" type="date" value={form.periodFrom} onChange={e => setForm(f => ({ ...f, periodFrom: e.target.value }))} />
+              <Input label="Period To" type="date" value={form.periodTo} onChange={e => setForm(f => ({ ...f, periodTo: e.target.value }))} />
+            </div>
+            <div style={{ fontWeight: 600, fontSize: 11, color: MUTED, letterSpacing: "0.05em", textTransform: "uppercase", marginBottom: 6 }}>Deductions</div>
+            <Card style={{ padding: "0 14px", marginBottom: 12 }}>
+              <DRow label="Federal Income Tax" field="fedTax" />
+              <DRow label="Provincial Tax (ON)" field="provTax" />
+              <DRow label="CPP / QPP" field="cpp" />
+              <DRow label="EI Premium" field="ei" />
+              <DRow label="Other" field="other" />
+              <div style={{ display: "flex", justifyContent: "space-between", padding: "10px 0 4px", fontWeight: 700 }}>
+                <span style={{ fontSize: 14, color: TEXT }}>Net Pay</span>
+                <span style={{ fontSize: 16, color: ACCENT, fontFamily: "'Crimson Pro', Georgia, serif" }}>{fmt(calcNet(form))}</span>
+              </div>
+            </Card>
+            <Input label="Notes (optional)" placeholder="e.g. Includes overtime" value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} />
+            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+              <Btn onClick={add}>Log Paycheque</Btn>
+              <Btn variant="ghost" onClick={() => setOpen(false)}>Cancel</Btn>
+            </div>
+          </Card>
+        ) : <Btn onClick={() => setOpen(true)} style={{ alignSelf: "flex-start" }}>+ Log Paycheque</Btn>}
+
+        {paycheques.length === 0 && !open ? <Empty icon="💵" text="No paycheques logged yet." /> : (
+          <Card style={{ padding: 0, overflow: "hidden" }}>
+            <div style={{ padding: "14px 16px", borderBottom: `1px solid ${BORDER}`, fontWeight: 700, color: TEXT, fontSize: 14 }}>History</div>
+            {paycheques.map((p, i) => (
+              <div key={p.id} style={{ padding: "13px 16px", borderBottom: i < paycheques.length - 1 ? `1px solid ${BORDER}` : "none", display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, fontSize: 14, color: TEXT }}>{p.employer}</div>
+                  <div style={{ fontSize: 11, color: MUTED, marginTop: 1 }}>{p.periodFrom && p.periodTo ? `${p.periodFrom} → ${p.periodTo}` : p.date}{p.notes ? ` · ${p.notes}` : ""}</div>
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <div style={{ fontWeight: 700, fontSize: 14, color: ACCENT }}>{fmt(p.net)} <span style={{ fontSize: 11, fontWeight: 500, color: MUTED }}>net</span></div>
+                  <div style={{ fontSize: 11, color: MUTED }}>{fmt(p.gross)} gross</div>
+                </div>
+                <button onClick={() => setPaycheques(prev => prev.filter(x => x.id !== p.id))} style={{ background: "none", border: "none", cursor: "pointer", color: MUTED, fontSize: 18, flexShrink: 0 }}>×</button>
+              </div>
+            ))}
+          </Card>
+        )}
+      </div>
+    );
+  }
+
+  // ── App ──────────────────────────────────────────────────────────────────────
+  const TABS = [
+    { id: "transactions", label: "Transactions", icon: "↕" },
+    { id: "budget", label: "Budget", icon: "⊡" },
+    { id: "savings", label: "Savings", icon: "◎" },
+    { id: "invoices", label: "Invoices", icon: "⊞" },
+    { id: "paycheques", label: "Paycheques", icon: "💵" },
+  ];
+
+  function App() {
+    if (!isConfigured()) return <SetupWizard />;
+
+    const [tab, setTab] = useState("transactions");
+    const [transactions, setTransactions, tSynced] = useFirebaseState("transactions", []);
+    const [budgets, setBudgets, bSynced] = useFirebaseState("budgets", {});
+    const [goals, setGoals, gSynced] = useFirebaseState("goals", []);
+    const [invoices, setInvoices, iSynced] = useFirebaseState("invoices", []);
+    const [paycheques, setPaycheques, pSynced] = useFirebaseState("paycheques", []);
+    const synced = tSynced && bSynced && gSynced && iSynced && pSynced;
+
+    return (
+      <div style={{ minHeight: "100vh", background: BG }}>
+        <div style={{ background: SURFACE, borderBottom: `1px solid ${BORDER}`, padding: "0 16px", position: "sticky", top: 0, zIndex: 10 }}>
+          <div style={{ maxWidth: 720, margin: "0 auto" }}>
+            <div style={{ padding: "16px 0 0", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+                <h1 style={{ margin: 0, fontFamily: "'Crimson Pro', Georgia, serif", fontSize: 24, fontWeight: 700, color: TEXT, letterSpacing: "-0.02em" }}>Finance</h1>
+                <span style={{ fontSize: 12, color: MUTED }}>{new Date().toLocaleString("default", { month: "short", year: "numeric" })}</span>
+              </div>
+              <SyncBadge synced={synced} />
+            </div>
+            <div style={{ display: "flex", marginTop: 12, overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
+              {TABS.map(t => (
+                <button key={t.id} onClick={() => setTab(t.id)} style={{
+                  padding: "9px 12px", fontSize: 12, fontWeight: 600, background: "transparent",
+                  border: "none", borderBottom: tab === t.id ? `2px solid ${ACCENT}` : "2px solid transparent",
+                  color: tab === t.id ? ACCENT : MUTED, cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0
+                }}>
+                  {t.icon} {t.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div style={{ maxWidth: 720, margin: "0 auto", padding: "20px 16px 80px" }}>
+          {tab === "transactions" && <Transactions transactions={transactions} setTransactions={setTransactions} />}
+          {tab === "budget" && <Budget transactions={transactions} budgets={budgets} setBudgets={setBudgets} />}
+          {tab === "savings" && <Savings goals={goals} setGoals={setGoals} />}
+          {tab === "invoices" && <Invoices invoices={invoices} setInvoices={setInvoices} />}
+          {tab === "paycheques" && <Paycheques paycheques={paycheques} setPaycheques={setPaycheques} setTransactions={setTransactions} />}
+        </div>
+      </div>
+    );
+  }
+
+  ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
